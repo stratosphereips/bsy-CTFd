@@ -620,7 +620,8 @@ class ChallengeAttempt(Resource):
                     403,
                 )
 
-            status, message = chal_class.attempt(challenge, request)
+            # status, message = chal_class.attempt(challenge, request)
+            status, message = chal_class.attempt(challenge, request, user)
             if status:  # The challenge plugin says the input is right
                 if ctftime() or current_user.is_admin():
                     chal_class.solve(

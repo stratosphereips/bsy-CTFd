@@ -69,7 +69,30 @@ class CTFdRegexFlag(BaseFlag):
         return res and res.group() == provided
 
 
-FLAG_CLASSES = {"static": CTFdStaticFlag, "regex": CTFdRegexFlag}
+class IndvidualFlag(BaseFlag):
+    name = "individual"
+    templates = {  # Nunjucks templates used for key editing & viewing
+        "create": "/plugins/flags/assets/individual/create.html",
+        "update": "/plugins/flags/assets/individual/edit.html",
+    }
+
+    @staticmethod
+    def compare(chal_key_obj, provided):
+        saved = chal_key_obj.content
+        data = chal_key_obj.data
+
+        #log("submissions", "data:{data}, provided:{msg1} saved:{msg2}", data=data, msg1=provided, msg2=saved)
+
+        if len(saved) != len(provided):
+            return False
+        result = 0
+
+        for x, y in zip(saved, provided):
+            result |= ord(x) ^ ord(y)
+        return result == 0
+
+
+FLAG_CLASSES = {"static": CTFdStaticFlag, "regex": CTFdRegexFlag, "individual": IndvidualFlag}
 
 
 def get_flag_class(class_id):

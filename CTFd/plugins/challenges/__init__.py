@@ -107,7 +107,7 @@ class BaseChallenge(object):
         db.session.commit()
 
     @classmethod
-    def attempt(cls, challenge, request):
+    def attempt(cls, challenge, request, user=None):
         """
         This method is used to check whether a given input is right or wrong. It does not make any changes and should
         return a boolean for correctness and a string to be shown to the user. It is also in charge of parsing the
@@ -123,6 +123,11 @@ class BaseChallenge(object):
         for flag in flags:
             try:
                 if get_flag_class(flag.type).compare(flag, submission):
+                    if flag.type == 'individual':
+                        if flag.data == user.name:
+                            return True, "Correct"
+                        else:
+                            return False, "Wrong user"
                     return True, "Correct"
             except FlagException as e:
                 return False, str(e)
