@@ -66,11 +66,11 @@ target/
 CTFd/static/uploads
 CTFd/uploads
 .data/
-.data_tsaging/
+.data_staging/
 .ctfd_secret_key
 .*.swp
-.env
-
+.bsy_env
+.staging_env
 # Vagrant
 .vagrant
 
