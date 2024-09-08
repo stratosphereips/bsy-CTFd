@@ -1,0 +1,47 @@
+services:
+  ctfd:
+    build: .
+    user: root
+    restart: always
+    env_file: .bsy_env
+    volumes:
+      - .prod_data/CTFd/logs:/var/log/CTFd
+      - .prod_data/CTFd/uploads:/var/uploads
+      - .:/opt/CTFd:ro
+    depends_on:
+      - db
+    networks:
+        bsy_ctfd:
+        internal:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ctfd.entrypoints=websecure"
+      - "traefik.http.routers.ctfd.rule=Host(`ctfd.bsy.fel.cvut.cz`)"
+      - "traefik.http.routers.ctfd.tls.certresolver=resolver"
+      - "traefik.http.services.ctfd.loadbalancer.server.port=8000"
+      # - "traefik.docker.network=ctfd_default"
+
+  db:
+    image: mariadb:10.11
+    restart: always
+    env_file: .bsy_env
+    volumes:
+      - .prod_data/mysql:/var/lib/mysql
+    networks:
+        internal:
+    # This command is required to set important mariadb defaults
+    command: [mysqld, --character-set-server=utf8mb4, --collation-server=utf8mb4_unicode_ci, --wait_timeout=28800, --log-warnings=0]
+
+  cache:
+    image: redis:latest
+    restart: always
+    volumes:
+    - .prod_data/redis:/data
+    networks:
+        internal:
+
+networks:
+    bsy_ctfd:
+      external: true
+    internal:
+        internal: true

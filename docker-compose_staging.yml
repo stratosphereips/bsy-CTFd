@@ -1,0 +1,47 @@
+services:
+  ctfd-staging:
+    build: .
+    user: root
+    restart: always
+    env_file: .staging_env
+    volumes:
+      - .staging_data/CTFd/logs:/var/log/CTFd
+      - .staging_data/CTFd/uploads:/var/uploads
+      - .:/opt/CTFd:ro
+    depends_on:
+      - db-staging
+    networks:
+      - bsy_ctfd_staging
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ctfd-staging.entrypoints=websecure"
+      - "traefik.http.routers.ctfd-staging.rule=Host(`ctfd-staging.stratosphereips.org`)"
+      - "traefik.http.routers.ctfd-staging.tls.certresolver=resolver"
+      - "traefik.http.services.ctfd-staging.loadbalancer.server.port=8000"
+      # - "traefik.docker.network=ctfd_default"
+
+  db-staging:
+    image: mariadb:10.11
+    restart: always
+    env_file: .staging_env
+    volumes:
+      - .staging_data/mysql:/var/lib/mysql
+    networks:
+        internal:
+    # This command is required to set important mariadb defaults
+    command: [mysqld, --character-set-server=utf8mb4, --collation-server=utf8mb4_unicode_ci, --wait_timeout=28800, --log-warnings=0]
+
+  cache-staging:
+    image: redis:latest
+    restart: always
+    volumes:
+    - .staging_data/redis:/data
+    networks:
+        internal:
+
+networks:
+    bsy_ctfd_staging:
+      external: true
+    internal:
+      internal: true
