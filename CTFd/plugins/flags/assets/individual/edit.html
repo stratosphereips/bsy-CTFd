@@ -1,0 +1,17 @@
+<label>
+	Individual<br>
+	<small>Edit individual flag</small>
+</label>
+<div class="form-group">
+	<small>Edit user name:</small>
+	<input type="text" class="form-control" name="data" value="{{ data }}">
+    <small>Edit flag:</small>
+    <input type="text" class="form-control" name="content" value="{{ content }}">
+</div>
+
+<input type="hidden" name="type" value="individual">
+<input type="hidden" name="id" value="{{ id }}">
+<hr>
+<div class="form-group">
+	<button class="btn btn-success float-right">Update</button>
+</div>

@@ -755,7 +755,7 @@ class ChallengeAttempt(Resource):
                         403,
                     )
 
-            response = chal_class.attempt(challenge, request)
+            response = chal_class.attempt(challenge, request, user)
             # TODO: CTFd 4.0 We should remove the tuple strategy for Challenge plugins in favor of ChallengeResponse
             if isinstance(response, tuple):
                 status = response[0]

@@ -128,7 +128,7 @@ class BaseChallenge(object):
         db.session.commit()
 
     @classmethod
-    def attempt(cls, challenge, request):
+    def attempt(cls, challenge, request, user=None):
         """
         This method is used to check whether a given input is right or wrong. It does not make any changes and should
         return a boolean for correctness and a string to be shown to the user. It is also in charge of parsing the
@@ -144,7 +144,7 @@ class BaseChallenge(object):
         flags = Flags.query.filter_by(challenge_id=challenge.id).all()
 
         if challenge.logic == "any":
-            return challenge_attempt_any(submission, challenge, flags)
+            return challenge_attempt_any(submission, challenge, flags, user)
         elif challenge.logic == "all":
             return challenge_attempt_all(submission, challenge, flags)
         elif challenge.logic == "team":

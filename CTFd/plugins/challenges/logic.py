@@ -4,16 +4,27 @@ from CTFd.utils.config import is_teams_mode
 from CTFd.utils.user import get_current_team, get_current_user
 
 
-def challenge_attempt_any(submission, challenge, flags):
+def challenge_attempt_any(submission, challenge, flags, user=None):
     from CTFd.plugins.challenges import ChallengeResponse
 
     for flag in flags:
         try:
             if get_flag_class(flag.type).compare(flag, submission):
+                if flag.type == 'individual':
+                    if flag.data == user.name:
+                        return ChallengeResponse(
+                            status="correct",
+                            message="Correct",
+                        )
+                    else:
+                        return ChallengeResponse(
+                            status="incorrect",
+                            message="Wrong user",
+                        )
                 return ChallengeResponse(
-                    status="correct",
-                    message="Correct",
-                )
+                            status="correct",
+                            message="Correct",
+                        )
         except FlagException as e:
             return ChallengeResponse(
                 status="incorrect",
