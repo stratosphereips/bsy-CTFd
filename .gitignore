@@ -80,3 +80,10 @@ node_modules/
 
 # Flask Profiler files
 flask_profiler.sql
+
+.bsy_env
+.prod_data/
+.staging_env
+.staging_data/
+
+
