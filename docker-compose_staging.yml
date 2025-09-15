@@ -19,7 +19,7 @@ services:
       - "traefik.http.routers.ctfd-staging.rule=Host(`ctfd-staging.stratosphereips.org`)"
       - "traefik.http.routers.ctfd-staging.tls.certresolver=resolver"
       - "traefik.http.services.ctfd-staging.loadbalancer.server.port=8000"
-      # - "traefik.docker.network=ctfd_default"
+      - "traefik.docker.network=bsy_ctfd_staging"
 
   db-staging:
     image: mariadb:10.11

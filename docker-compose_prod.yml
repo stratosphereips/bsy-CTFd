@@ -44,4 +44,4 @@ networks:
     bsy_ctfd:
       external: true
     internal:
-        internal: true
+      internal: true
