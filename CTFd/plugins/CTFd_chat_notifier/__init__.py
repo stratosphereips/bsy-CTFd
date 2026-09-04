@@ -1,14 +1,26 @@
+import uuid
+from functools import wraps
+
+import requests
+from flask import (
+    Blueprint,
+    Markup,
+    abort,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+
+from CTFd.cache import clear_config
+from CTFd.models import Solves, db
 from CTFd.plugins.challenges import BaseChallenge
-from CTFd.utils.modes import TEAMS_MODE, get_mode_as_word, get_model
+from CTFd.utils import get_config, set_config
 from CTFd.utils.decorators import admins_only
 from CTFd.utils.humanize.numbers import ordinalize
-from CTFd.utils import get_config, set_config
-from CTFd.cache import clear_config
-from CTFd.models import Challenges, Solves, db
-from flask import url_for, Blueprint, render_template, redirect, request, session, abort, Markup
-from functools import wraps
-import requests
-import uuid
+from CTFd.utils.modes import TEAMS_MODE, get_mode_as_word, get_model
+
 
 class BaseNotifier(object):
     def get_settings(self):
@@ -51,7 +63,7 @@ class SlackNotifier(BaseNotifier):
                     }
                 },
             ]
-        })
+        }, timeout=10)
 
     def notify_message(self, title, content):
         requests.post(self.get_webhook_url(), json={
@@ -72,7 +84,7 @@ class SlackNotifier(BaseNotifier):
                     }
                 },
             ]
-        })
+        }, timeout=10)
 
 class DiscordNotifier(BaseNotifier):
     def get_settings(self):
@@ -93,7 +105,7 @@ class DiscordNotifier(BaseNotifier):
             'embeds': [{
                 'description': markdown_msg,
             }]
-        })
+        }, timeout=10)
 
     def notify_message(self, title, content):
         requests.post(self.get_webhook_url(), json={
@@ -101,7 +113,7 @@ class DiscordNotifier(BaseNotifier):
                 'title': title,
                 'description': content,
             }]
-        })
+        }, timeout=10)
 
 class TelegramNotifier(BaseNotifier):
     def get_settings(self):
@@ -131,14 +143,14 @@ class TelegramNotifier(BaseNotifier):
             'chat_id': self.get_chat_id(),
             'parse_mode': 'MarkdownV2',
             'text': markdown_msg,
-        })
+        }, timeout=10)
 
     def notify_message(self, title, content):
         requests.post('https://api.telegram.org/bot{bot_token}/sendMessage'.format(bot_token=self.get_bot_token()), json={
             'chat_id': self.get_chat_id(),
             'parse_mode': 'MarkdownV2',
             'text': '*{title}*\n{content}'.format(title=self._escape(title), content=self._escape(content)),
-        })
+        }, timeout=10)
 
 class MatrixNotifier(BaseNotifier):
     def get_settings(self):
@@ -160,12 +172,6 @@ class MatrixNotifier(BaseNotifier):
         return s
 
     def notify_solve(self, format, solver_name, solver_url, challenge_name, challenge_url, solve_num):
-        
-        markdown_msg = format.replace('(', '\\(').replace(')', '\\)').format(
-            solver='[{solver_name}]({solver_url})'.format(solver_name=self._escape(solver_name), solver_url=self._escape(solver_url)),
-            challenge='[{challenge_name}]({challenge_url})'.format(challenge_name=self._escape(challenge_name), challenge_url=self._escape(challenge_url)),
-            solve_num=ordinalize(solve_num),
-        )
         plain_msg = format.format(
             solver=solver_name,
             challenge=challenge_name,
@@ -181,7 +187,7 @@ class MatrixNotifier(BaseNotifier):
         txn_id = str(uuid.uuid4())
         path = f"/_matrix/client/r0/rooms/{self.get_room_id()}/send/m.room.message/{txn_id}"
 
-        requests.put(f'{self.get_server_url()}{path}', json=payload, headers=headers)
+        requests.put(f'{self.get_server_url()}{path}', json=payload, headers=headers, timeout=10)
 
     def notify_message(self, title, content):
         payload = {
@@ -192,11 +198,11 @@ class MatrixNotifier(BaseNotifier):
         headers = {
             "Authorization": f"Bearer {self.get_bot_token()}"
         }
-        
+
         txn_id = str(uuid.uuid4())
         path = f"/_matrix/client/r0/rooms/{self.get_room_id()}/send/m.room.message/{txn_id}"
 
-        requests.put(f'{self.get_server_url()}{path}', json=payload, headers=headers)
+        requests.put(f'{self.get_server_url()}{path}', json=payload, headers=headers, timeout=10)
 
 """
 Global dictionary used to hold all the supported chat services. To add support for a new chat service, create a plugin and insert
@@ -215,7 +221,7 @@ def get_configured_notifier():
 
 def get_all_notifier_settings():
     settings = set()
-    for k,v in NOTIFIER_CLASSES.items():
+    for _k,v in NOTIFIER_CLASSES.items():
         for setting in v.get_settings():
             if setting in settings:
                 raise Exception('Notifier {0} uses duplicate setting name {1}', v, setting)
@@ -256,8 +262,8 @@ def load(app):
             for setting in get_all_notifier_settings():
                 context[setting] = get_config(setting)
             supported_notifier_settings = {}
-            for k,v in NOTIFIER_CLASSES.items():
-                supported_notifier_settings[k] = Markup(render_template('chat_notifier/admin_notifier_settings/{}.html'.format(k), **context))
+            for k,_v in NOTIFIER_CLASSES.items():
+                supported_notifier_settings[k] = Markup(render_template('chat_notifier/admin_notifier_settings/{}.html'.format(k), **context))  # noqa: S704
             context['supported_notifier_settings'] = supported_notifier_settings
             return render_template('chat_notifier/admin.html', **context)
 
