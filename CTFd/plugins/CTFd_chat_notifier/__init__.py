@@ -293,7 +293,11 @@ def load(app):
                 max_solves = int(max_solves) if max_solves is not None else None
 
                 if max_solves is None or solve_count <= max_solves:
-                    notifier.notify_solve(get_config('notifier_solve_msg', '{solver} solved {challenge} ({solve_num} solve)'), solver.name, solver_url, challenge.name, challenge_url, solve_count)
+                    try:
+                        notifier.notify_solve(get_config('notifier_solve_msg', '{solver} solved {challenge} ({solve_num} solve)'), solver.name, solver_url, challenge.name, challenge_url, solve_count)
+                    except Exception as e:
+                        # Notification failures must never break the solve
+                        app.logger.error("Chat notifier failed to send solve notification: %s", e)
         return wrapper
     BaseChallenge.solve = chal_solve_decorator(BaseChallenge.solve)
 
@@ -306,6 +310,10 @@ def load(app):
                 notifier = get_configured_notifier()
                 if notifier and bool(get_config('notifier_send_notifications')):
                     notification = kwargs['data']
-                    notifier.notify_message(notification['title'], notification['content'])
+                    try:
+                        notifier.notify_message(notification['title'], notification['content'])
+                    except Exception as e:
+                        # Notification failures must never break the event publish
+                        app.logger.error("Chat notifier failed to send message notification: %s", e)
         return wrapper
     app.events_manager.publish = event_publish_decorator(app.events_manager.publish)
