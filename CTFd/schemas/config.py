@@ -17,7 +17,7 @@ class ConfigValueField(fields.Field):
             # You may be able to exceed this in other databases
             # but MySQL is our database of record
             if len(value) > 65535:
-                raise ValidationError(f'{data["key"]} config is too long')
+                raise ValidationError(f"{data['key']} config is too long")
             return value
         else:
             return value
@@ -38,6 +38,10 @@ class ConfigSchema(ma.ModelSchema):
             if isinstance(view, string_types):
                 kwargs["only"] = self.views[view]
             elif isinstance(view, list):
+                # TODO: CTFd 4.0 Passing a list of fields to ConfigSchema as the view will be removed
+                print(
+                    "Passing a list of fields to ConfigSchema will be removed in CTFd 4.0. Please pass a view name instead."
+                )
                 kwargs["only"] = view
 
         super(ConfigSchema, self).__init__(*args, **kwargs)

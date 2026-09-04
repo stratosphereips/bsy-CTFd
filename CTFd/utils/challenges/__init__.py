@@ -2,7 +2,7 @@ import datetime
 from collections import namedtuple
 
 from sqlalchemy import func as sa_func
-from sqlalchemy.sql import and_, false, true
+from sqlalchemy.sql import and_, false, or_, true
 
 from CTFd.cache import cache
 from CTFd.models import Challenges, Ratings, Solves, Submissions, Users, db
@@ -13,11 +13,25 @@ from CTFd.utils.dates import isoformat, unix_time_to_utc
 from CTFd.utils.helpers.models import build_model_filters
 from CTFd.utils.modes import generate_account_url, get_model
 
+# TODO: CTFd 4.0. Consider changing to a dataclass
+ChallengeFields = [
+    "id",
+    "type",
+    "name",
+    "value",
+    "category",
+    "tags",
+    "requirements",
+    "position",
+    "module_id",
+]
 Challenge = namedtuple(
-    "Challenge", ["id", "type", "name", "value", "category", "tags", "requirements"]
+    "Challenge",
+    ChallengeFields,
+    defaults=(None,) * len(ChallengeFields),
 )
 
-Rating = namedtuple("Rating", ["average", "count"])
+Rating = namedtuple("Rating", ["up", "down", "count"])
 
 
 @cache.memoize(timeout=60)
@@ -27,12 +41,23 @@ def get_all_challenges(admin=False, field=None, q=None, **query_args):
     # Admins can see hidden and locked challenges in the admin view
     if admin is False:
         chal_q = chal_q.filter(
-            and_(Challenges.state != "hidden", Challenges.state != "locked")
+            and_(Challenges.state != "hidden", Challenges.state != "locked"),
+            or_(
+                Challenges.scheduled_at.is_(None),
+                Challenges.scheduled_at <= datetime.datetime.utcnow(),
+            ),
         )
     chal_q = (
         chal_q.filter_by(**query_args)
         .filter(*filters)
-        .order_by(Challenges.value, Challenges.id)
+        .order_by(
+            (
+                Challenges.position == 0
+            ).asc(),  # Position of 0 should go to the end/bottom
+            Challenges.position.asc(),  # Ordered challenges should go first
+            Challenges.value,
+            Challenges.id,
+        )
     )
     tag_schema = TagSchema(view="user", many=True)
 
@@ -44,8 +69,10 @@ def get_all_challenges(admin=False, field=None, q=None, **query_args):
             name=c.name,
             value=c.value,
             category=c.category,
-            requirements=c.requirements,
             tags=tag_schema.dump(c.tags).data,
+            requirements=c.requirements,
+            position=c.position,
+            module_id=c.module_id,
         )
         results.append(ct)
     return results
@@ -112,7 +139,7 @@ def get_solve_ids_for_user_id(user_id):
         .filter(Solves.account_id == user.account_id)
         .all()
     )
-    solve_ids = {value for value, in solve_ids}
+    solve_ids = {value for (value,) in solve_ids}
     return solve_ids
 
 
@@ -153,10 +180,17 @@ def get_rating_average_for_challenge_id(challenge_id):
     ratings = Ratings.query.filter_by(challenge_id=challenge_id).all()
 
     if ratings:
-        # Calculate average rating
-        total_value = sum(rating.value for rating in ratings)
-        average_rating = total_value / len(ratings)
-
-        return Rating(average=round(average_rating, 1), count=len(ratings))
+        # Sum upvotes and downvotes
+        up = 0
+        down = 0
+        count = 0
+        for rating in ratings:
+            count += 1
+            if rating.value < 0:
+                down += rating.value
+            else:
+                up += rating.value
+        down = abs(down)
+        return Rating(up=up, down=down, count=count)
     else:
-        return Rating(average=None, count=0)
+        return Rating(up=0, down=0, count=0)

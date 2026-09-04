@@ -78,9 +78,11 @@
 						<th class="sort-col text-center"><b>ID</b></th>
 						<th class="sort-col"><b>Name</b></th>
 						<th class="sort-col"><b>Category</b></th>
+						<th class="sort-col"><b>Module</b></th>
 						<th class="sort-col text-center"><b>Value</b></th>
 						<th class="sort-col text-center"><b>Type</b></th>
 						<th class="sort-col text-center"><b>State</b></th>
+						<th class="sort-col text-center"><b>Solution</b></th>
 					</tr>
 					</thead>
 					<tbody>
@@ -88,17 +90,36 @@
 						<tr data-href="{{ url_for('admin.challenges_detail', challenge_id=challenge.id) }}">
 							<td class="d-block border-right text-center" data-checkbox>
 								<div class="form-check">
-									<input type="checkbox" class="form-check-input" value="{{ challenge.id }}" autocomplete="off" data-challenge-id="{{ challenge.id }}">&nbsp;
+									<input type="checkbox" class="form-check-input" value="{{ challenge.id }}" autocomplete="off" data-challenge-id="{{ challenge.id }}" data-solution-id="{{ challenge.solution_id }}">&nbsp;
 								</div>
 							</td>
 							<td class="text-center">{{ challenge.id }}</td>
 							<td><a href="{{ url_for('admin.challenges_detail', challenge_id=challenge.id) }}">{{ challenge.name }}</a></td>
 							<td>{{ challenge.category }}</td>
+							<td>
+								{% if challenge.module %}
+									<a href="{{ url_for('admin.modules_detail', module_id=challenge.module.id) }}">{{ challenge.module.name }}</a>
+								{% else %}
+									<span class="text-muted">-</span>
+								{% endif %}
+							</td>
 							<td class="text-center">{{ challenge.value }}</td>
 							<td class="text-center">{{ challenge.type }}</td>
 							<td class="text-center">
 								{% set badge_state = 'badge-danger' if challenge.state == 'hidden' else 'badge-success' %}
 								<span class="badge {{ badge_state }}">{{ challenge.state }}</span>
+							</td>
+							<td class="text-center">
+								{% if challenge.solution_id %}
+									{% if challenge.solution.state == 'hidden' %}
+										{% set badge_state = 'badge-danger' %}
+									{% elif challenge.solution.state == 'solved' %}
+										{% set badge_state = 'badge-warning' %}
+									{% else %}
+										{% set badge_state = 'badge-success' %}
+									{% endif %}
+									<span class="badge {{ badge_state }}">{{ challenge.solution.state }}</span>
+								{% endif %}
 							</td>
 						</tr>
 					{% endfor %}

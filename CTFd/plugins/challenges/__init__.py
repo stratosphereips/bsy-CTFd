@@ -1,7 +1,13 @@
 from dataclasses import dataclass
 
 from flask import Blueprint
+from sqlalchemy.exc import IntegrityError
 
+from CTFd.exceptions.challenges import (
+    ChallengeCreateException,
+    ChallengeSolveException,
+    ChallengeUpdateException,
+)
 from CTFd.models import (
     ChallengeFiles,
     Challenges,
@@ -9,16 +15,22 @@ from CTFd.models import (
     Flags,
     Hints,
     Partials,
+    Ratelimiteds,
+    SolutionFiles,
+    Solutions,
+    SolutionUnlocks,
     Solves,
     Tags,
     db,
 )
 from CTFd.plugins import register_plugin_assets_directory
+from CTFd.plugins.challenges.decay import DECAY_FUNCTIONS, logarithmic
 from CTFd.plugins.challenges.logic import (
     challenge_attempt_all,
     challenge_attempt_any,
     challenge_attempt_team,
 )
+from CTFd.utils.dates import parse_iso_datetime
 from CTFd.utils.uploads import delete_file
 from CTFd.utils.user import get_ip
 
@@ -33,6 +45,15 @@ class ChallengeResponse:
         # TODO: CTFd 4.0 remove this behavior as we should move away from the tuple strategy
         yield (True if self.status == "correct" else False)
         yield self.message
+
+
+def calculate_value(challenge):
+    f = DECAY_FUNCTIONS.get(challenge.function, logarithmic)
+    value = f(challenge)
+
+    challenge.value = value
+    db.session.commit()
+    return challenge
 
 
 class BaseChallenge(object):
@@ -50,12 +71,34 @@ class BaseChallenge(object):
         :param request:
         :return:
         """
-        data = request.form or request.get_json()
+        data = dict(request.form or request.get_json() or {})
+        if "scheduled_at" in data:
+            try:
+                data["scheduled_at"] = parse_iso_datetime(data["scheduled_at"])
+            except ValueError:
+                raise ChallengeCreateException(
+                    "Invalid 'scheduled_at' — expected ISO 8601 datetime"
+                )
 
         challenge = cls.challenge_model(**data)
 
+        if challenge.function in DECAY_FUNCTIONS:
+            if data.get("value") and not data.get("initial"):
+                challenge.initial = data["value"]
+
+            for attr in ("initial", "minimum", "decay"):
+                db.session.rollback()
+                if getattr(challenge, attr) is None:
+                    raise ChallengeCreateException(
+                        f"Missing '{attr}' but function is {challenge.function}"
+                    )
+
         db.session.add(challenge)
         db.session.commit()
+
+        # If the challenge is dynamic we should calculate a new value
+        if challenge.function in DECAY_FUNCTIONS:
+            return calculate_value(challenge)
 
         return challenge
 
@@ -78,7 +121,15 @@ class BaseChallenge(object):
             "category": challenge.category,
             "state": challenge.state,
             "max_attempts": challenge.max_attempts,
+            "position": challenge.position,
             "logic": challenge.logic,
+            "initial": challenge.initial if challenge.function != "static" else None,
+            "decay": challenge.decay if challenge.function != "static" else None,
+            "minimum": challenge.minimum if challenge.function != "static" else None,
+            "function": challenge.function,
+            "scheduled_at": (
+                challenge.scheduled_at.isoformat() if challenge.scheduled_at else None
+            ),
             "type": challenge.type,
             "type_data": {
                 "id": cls.id,
@@ -99,11 +150,40 @@ class BaseChallenge(object):
         :param request:
         :return:
         """
-        data = request.form or request.get_json()
+        data = dict(request.form or request.get_json() or {})
+        if "scheduled_at" in data:
+            try:
+                data["scheduled_at"] = parse_iso_datetime(data["scheduled_at"])
+            except ValueError:
+                raise ChallengeUpdateException("Invalid input for 'scheduled_at'")
+
         for attr, value in data.items():
+            # We need to set these to floats so that the next operations don't operate on strings
+            if attr in ("initial", "minimum", "decay") and value is not None:
+                try:
+                    value = float(value)
+                except (ValueError, TypeError):
+                    db.session.rollback()
+                    raise ChallengeUpdateException(f"Invalid input for '{attr}'")
             setattr(challenge, attr, value)
 
+        for attr in ("initial", "minimum", "decay"):
+            if (
+                challenge.function in DECAY_FUNCTIONS
+                and getattr(challenge, attr) is None
+            ):
+                db.session.rollback()
+                raise ChallengeUpdateException(
+                    f"Missing '{attr}' but function is {challenge.function}"
+                )
+
         db.session.commit()
+
+        # If the challenge is dynamic we should calculate a new value
+        if challenge.function in DECAY_FUNCTIONS:
+            return calculate_value(challenge)
+
+        # If we don't support dynamic we just don't do anything
         return challenge
 
     @classmethod
@@ -123,6 +203,15 @@ class BaseChallenge(object):
         ChallengeFiles.query.filter_by(challenge_id=challenge.id).delete()
         Tags.query.filter_by(challenge_id=challenge.id).delete()
         Hints.query.filter_by(challenge_id=challenge.id).delete()
+        solution = Solutions.query.filter_by(challenge_id=challenge.id).first()
+        if solution:
+            solution_files = SolutionFiles.query.filter_by(
+                solution_id=solution.id
+            ).all()
+            for f in solution_files:
+                delete_file(f.id)
+            SolutionUnlocks.query.filter_by(target=solution.id).delete()
+            Solutions.query.filter_by(id=solution.id).delete()
         Challenges.query.filter_by(id=challenge.id).delete()
         cls.challenge_model.query.filter_by(id=challenge.id).delete()
         db.session.commit()
@@ -167,6 +256,20 @@ class BaseChallenge(object):
         db.session.commit()
 
     @classmethod
+    def ratelimited(cls, user, team, challenge, request):
+        data = request.form or request.get_json()
+        submission = data["submission"].strip()
+        partial = Ratelimiteds(
+            user_id=user.id,
+            team_id=team.id if team else None,
+            challenge_id=challenge.id,
+            ip=get_ip(req=request),
+            provided=submission,
+        )
+        db.session.add(partial)
+        db.session.commit()
+
+    @classmethod
     def solve(cls, user, team, challenge, request):
         """
         This method is used to insert Solves into the database in order to mark a challenge as solved.
@@ -178,6 +281,7 @@ class BaseChallenge(object):
         """
         data = request.form or request.get_json()
         submission = data["submission"].strip()
+
         solve = Solves(
             user_id=user.id,
             team_id=team.id if team else None,
@@ -185,8 +289,19 @@ class BaseChallenge(object):
             ip=get_ip(req=request),
             provided=submission,
         )
-        db.session.add(solve)
-        db.session.commit()
+
+        try:
+            db.session.add(solve)
+            db.session.commit()
+        except IntegrityError as e:
+            db.session.rollback()
+            raise ChallengeSolveException(
+                f"Duplicate solve for user {user.id} on challenge {challenge.id}"
+            ) from e
+
+        # If the challenge is dynamic we should calculate a new value
+        if challenge.function in DECAY_FUNCTIONS:
+            calculate_value(challenge)
 
     @classmethod
     def fail(cls, user, team, challenge, request):

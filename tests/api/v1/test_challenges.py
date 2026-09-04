@@ -1,8 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import datetime
+from unittest.mock import patch
 
 from freezegun import freeze_time
+from sqlalchemy.exc import IntegrityError
 
+from CTFd.exceptions.challenges import ChallengeSolveException
 from CTFd.models import Challenges, Flags, Hints, Solves, Tags, Tracking, Users
 from CTFd.utils import set_config
 from tests.helpers import (
@@ -152,6 +156,51 @@ def test_api_challenges_get_hidden_admin():
                 "/api/v1/challenges?view=admin", json=""
             ).get_json()["data"]
             assert len(challenges_list) == 2
+    destroy_ctfd(app)
+
+
+def test_api_challenges_get_sort_by_position():
+    """Test that challenges are sorted by position ascending, with position 0 at the end"""
+    app = create_ctfd()
+    with app.app_context():
+        c1_id = gen_challenge(app.db, name="chal1", value=10, position=10).id
+        c2_id = gen_challenge(app.db, name="chal2", value=10, position=5).id
+        c3_id = gen_challenge(app.db, name="chal3", value=10, position=15).id
+        c4_id = gen_challenge(app.db, name="chal4", value=10, position=0).id
+
+        with login_as_user(app, "admin") as client:
+            r = client.get("/api/v1/challenges?view=admin")
+            assert r.status_code == 200
+            data = r.get_json()["data"]
+
+            # Expected order: c2 (5), c1 (10), c3 (15), c4 (0 at end)
+            assert data[0]["id"] == c2_id
+            assert data[1]["id"] == c1_id
+            assert data[2]["id"] == c3_id
+            assert data[3]["id"] == c4_id
+
+    destroy_ctfd(app)
+
+
+def test_api_challenges_get_sort_by_position_fallback():
+    """Test that challenges with position 0 are sorted by value then ID"""
+    app = create_ctfd()
+    with app.app_context():
+        c1_id = gen_challenge(app.db, name="chal1", value=20, position=0).id
+        c2_id = gen_challenge(app.db, name="chal2", value=10, position=0).id
+        c3_id = gen_challenge(app.db, name="chal3", value=15, position=0).id
+        c4_id = gen_challenge(app.db, name="chal4", value=15, position=0).id
+
+        with login_as_user(app, "admin") as client:
+            r = client.get("/api/v1/challenges?view=admin")
+            assert r.status_code == 200
+            data = r.get_json()["data"]
+
+            assert data[0]["id"] == c2_id  # 1. c2 (position 0, value 10)
+            assert data[1]["id"] == c3_id  # 2. c3 (position 0, value 15, id lower)
+            assert data[2]["id"] == c4_id  # 3. c4 (position 0, value 15, id higher)
+            assert data[3]["id"] == c1_id  # 4. c1 (position 0, value 20)
+
     destroy_ctfd(app)
 
 
@@ -419,11 +468,13 @@ def test_api_challenges_post_admin():
                     "category": "cate",
                     "description": "desc",
                     "value": "100",
+                    "position": 5,
                     "state": "hidden",
                     "type": "standard",
                 },
             )
             assert r.status_code == 200
+            assert r.get_json()["data"]["position"] == 5
     destroy_ctfd(app)
 
 
@@ -855,10 +906,12 @@ def test_api_challenge_patch_admin():
         gen_challenge(app.db)
         with login_as_user(app, "admin") as client:
             r = client.patch(
-                "/api/v1/challenges/1", json={"name": "chal_name", "value": "200"}
+                "/api/v1/challenges/1",
+                json={"name": "chal_name", "value": "200", "position": "10"},
             )
             assert r.status_code == 200
             assert r.get_json()["data"]["value"] == 200
+            assert r.get_json()["data"]["position"] == 10
     destroy_ctfd(app)
 
 
@@ -1028,6 +1081,38 @@ def test_api_challenge_attempt_post_admin():
             )
             assert r.status_code == 200
             assert r.get_json()["data"]["status"] == "already_solved"
+    destroy_ctfd(app)
+
+
+def test_api_challenge_attempt_post_duplicate_solve_race_condition():
+    """Test that a race condition resulting in ChallengeSolveException returns 'already_solved' status"""
+    app = create_ctfd()
+    with app.app_context():
+        challenge = gen_challenge(app.db)
+        challenge_id = challenge.id
+        gen_flag(app.db, challenge_id=challenge.id, content="flag")
+        register_user(app)
+        client = login_as_user(app)
+
+        # Mock BaseChallenge.solve raising ChallengeSolveException - it's hard to trigger this race condition in tests
+        # The exception should be handled and API should return an already_solved status
+        with patch("CTFd.plugins.challenges.BaseChallenge.solve") as mock_solve:
+            exception = ChallengeSolveException("Duplicate solve")
+            exception.__cause__ = IntegrityError(
+                "INSERT test...", {}, Exception("UNIQUE constraint failed")
+            )
+            mock_solve.side_effect = exception
+
+            r = client.post(
+                "/api/v1/challenges/attempt",
+                json={"challenge_id": challenge_id, "submission": "flag"},
+            )
+
+            assert r.status_code == 200
+            resp = r.get_json()
+            assert resp["data"]["status"] == "already_solved"
+            assert "already solved this" in resp["data"]["message"]
+
     destroy_ctfd(app)
 
 
@@ -1437,4 +1522,188 @@ def test_api_challenge_tracking_first_open_only():
             # Multiple opens should still only have one tracking entry
             assert tracking_count == 1
 
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_hidden_from_non_admin_list():
+    """Non-admins do not see visible challenges whose scheduled_at is in the future"""
+
+    app = create_ctfd()
+    with app.app_context():
+        future = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        past = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        gen_challenge(app.db, name="now", scheduled_at=None)
+        gen_challenge(app.db, name="past", scheduled_at=past)
+        gen_challenge(app.db, name="future", scheduled_at=future)
+
+        register_user(app)
+        with login_as_user(app) as client:
+            data = client.get("/api/v1/challenges").get_json()["data"]
+            names = {c["name"] for c in data}
+            assert names == {"now", "past"}
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_visible_to_admin_list():
+    """Admins always see challenges regardless of scheduled_at"""
+
+    app = create_ctfd()
+    with app.app_context():
+        future = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        gen_challenge(app.db, name="future", scheduled_at=future)
+
+        with login_as_user(app, "admin") as admin:
+            data = admin.get("/api/v1/challenges?view=admin").get_json()["data"]
+            assert len(data) == 1
+            assert data[0]["name"] == "future"
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_detail_404_for_non_admin():
+    """Non-admins get 404 on detail endpoint for future-scheduled challenges"""
+
+    app = create_ctfd()
+    with app.app_context():
+        future = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        chal_id = gen_challenge(app.db, scheduled_at=future).id
+
+        register_user(app)
+        with login_as_user(app) as client:
+            r = client.get(f"/api/v1/challenges/{chal_id}")
+            assert r.status_code == 404
+
+        with login_as_user(app, "admin") as admin:
+            r = admin.get(f"/api/v1/challenges/{chal_id}")
+            assert r.status_code == 200
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_attempt_blocked():
+    """Attempts on future-scheduled challenges return 404 for non-admins"""
+
+    app = create_ctfd()
+    with app.app_context():
+        future = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        chal_id = gen_challenge(app.db, scheduled_at=future).id
+        gen_flag(app.db, chal_id)
+
+        register_user(app)
+        with login_as_user(app) as client:
+            r = client.post(
+                "/api/v1/challenges/attempt",
+                json={"challenge_id": chal_id, "submission": "flag"},
+            )
+            assert r.status_code == 404
+            assert Solves.query.count() == 0
+    destroy_ctfd(app)
+
+
+def test_api_challenges_hidden_state_overrides_scheduled_at():
+    """A hidden challenge stays hidden to non-admins even when scheduled_at is in the past"""
+
+    app = create_ctfd()
+    with app.app_context():
+        past = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        chal_id = gen_challenge(
+            app.db, name="hidden_past", state="hidden", scheduled_at=past
+        ).id
+
+        register_user(app)
+        with login_as_user(app) as client:
+            data = client.get("/api/v1/challenges").get_json()["data"]
+            assert data == []
+            r = client.get(f"/api/v1/challenges/{chal_id}")
+            assert r.status_code == 404
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_admin_update_roundtrip():
+    """Admin can set and clear scheduled_at via the update endpoint"""
+    app = create_ctfd()
+    with app.app_context():
+        chal_id = gen_challenge(app.db).id
+
+        with login_as_user(app, "admin") as admin:
+            r = admin.patch(
+                f"/api/v1/challenges/{chal_id}",
+                json={"scheduled_at": "2031-06-15T12:00:00"},
+            )
+            assert r.status_code == 200
+            chal = Challenges.query.filter_by(id=chal_id).first()
+            assert chal.scheduled_at == datetime.datetime(2031, 6, 15, 12, 0, 0)
+
+            r = admin.patch(
+                f"/api/v1/challenges/{chal_id}",
+                json={"scheduled_at": None},
+            )
+            assert r.status_code == 200
+            chal = Challenges.query.filter_by(id=chal_id).first()
+            assert chal.scheduled_at is None
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_tz_aware_normalized_to_utc():
+    """Timezone-aware ISO inputs are normalized to naive UTC for storage"""
+    app = create_ctfd()
+    with app.app_context():
+        chal_id = gen_challenge(app.db).id
+
+        with login_as_user(app, "admin") as admin:
+            r = admin.patch(
+                f"/api/v1/challenges/{chal_id}",
+                json={"scheduled_at": "2031-06-15T14:00:00+02:00"},
+            )
+            assert r.status_code == 200
+            chal = Challenges.query.filter_by(id=chal_id).first()
+            assert chal.scheduled_at == datetime.datetime(2031, 6, 15, 12, 0, 0)
+            assert chal.scheduled_at.tzinfo is None
+
+            r = admin.patch(
+                f"/api/v1/challenges/{chal_id}",
+                json={"scheduled_at": "2031-06-15T12:00:00.000Z"},
+            )
+            assert r.status_code == 200
+            chal = Challenges.query.filter_by(id=chal_id).first()
+            assert chal.scheduled_at == datetime.datetime(2031, 6, 15, 12, 0, 0)
+            assert chal.scheduled_at.tzinfo is None
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_solves_endpoint_blocked():
+    """Non-admins get 404 on the solves endpoint for future-scheduled challenges"""
+    app = create_ctfd()
+    with app.app_context():
+        future = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        past = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+        future_id = gen_challenge(app.db, name="future", scheduled_at=future).id
+        past_id = gen_challenge(app.db, name="past", scheduled_at=past).id
+
+        register_user(app)
+        with login_as_user(app) as client:
+            assert (
+                client.get(f"/api/v1/challenges/{future_id}/solves").status_code == 404
+            )
+            assert client.get(f"/api/v1/challenges/{past_id}/solves").status_code == 200
+
+        with login_as_user(app, "admin") as admin:
+            assert (
+                admin.get(f"/api/v1/challenges/{future_id}/solves").status_code == 200
+            )
+    destroy_ctfd(app)
+
+
+def test_api_challenges_scheduled_at_hint_blocked():
+    """Non-admins get 404 fetching a hint for a future-scheduled challenge"""
+    app = create_ctfd()
+    with app.app_context():
+        future = datetime.datetime.utcnow() + datetime.timedelta(days=1)
+        chal_id = gen_challenge(app.db, scheduled_at=future).id
+        hint_id = gen_hint(app.db, challenge_id=chal_id, content="secret hint").id
+
+        register_user(app)
+        with login_as_user(app) as client:
+            assert client.get(f"/api/v1/hints/{hint_id}").status_code == 404
+
+        with login_as_user(app, "admin") as admin:
+            assert admin.get(f"/api/v1/hints/{hint_id}").status_code == 200
     destroy_ctfd(app)

@@ -1,18 +1,16 @@
 import requests
-from flask import Blueprint, abort
+from flask import Blueprint, abort, redirect, render_template, request, session, url_for
 from flask import current_app as app
-from flask import redirect, render_template, request, session, url_for
 from flask_babel import lazy_gettext as _l
 
-from CTFd.cache import clear_team_session, clear_user_session
+from CTFd.cache import cache, clear_team_session, clear_user_session
 from CTFd.exceptions.email import (
     UserConfirmTokenInvalidException,
     UserResetPasswordTokenInvalidException,
 )
 from CTFd.models import Brackets, Teams, UserFieldEntries, UserFields, Users, db
-from CTFd.utils import config, email, get_app_config, get_config
+from CTFd.utils import config, email, get_app_config, get_config, validators
 from CTFd.utils import user as current_user
-from CTFd.utils import validators
 from CTFd.utils.config import can_send_mail, is_teams_mode
 from CTFd.utils.config.integrations import mlc_registration
 from CTFd.utils.config.visibility import registration_visible
@@ -38,15 +36,23 @@ auth = Blueprint("auth", __name__)
 @auth.route("/confirm/<data>", methods=["POST", "GET"])
 @ratelimit(method="POST", limit=10, interval=60)
 def confirm(data=None):
+    # If we can't send mails our behavior depends on verify_emails
     if not can_send_mail():
-        # If the CTF doesn't care about confirming email addresses then redierct to challenges
-        return redirect(url_for("challenges.listing"))
+        if get_config("verify_emails") is False:
+            return redirect(url_for("challenges.listing"))
+        else:
+            return render_template(
+                "confirm.html",
+                errors=[
+                    "Email verification is enabled but email sending isn't available. Please contact an admin to confirm your account"
+                ],
+            )
 
     # User is confirming email account
     if data and request.method == "GET":
         try:
             user_email = verify_email_confirm_token(data)
-        except (UserConfirmTokenInvalidException):
+        except UserConfirmTokenInvalidException:
             return render_template(
                 "confirm.html",
                 errors=["Your confirmation link is invalid, please generate a new one"],
@@ -60,10 +66,10 @@ def confirm(data=None):
             get_app_config("EMAIL_CONFIRMATION_REQUIRE_INTERACTION")
             and request.args.get("interaction") is None
         ):
-            button = """<button onclick="
+            button = """<button style="margin-top: 3rem; padding: 1rem;" onclick="
                 let u = new window.URL(window.location.href);
                 u.searchParams.set('interaction', '1');
-                window.location.href = u;">Confirm Email</button>"""
+                window.location.href = u;">Click Here to Confirm Email</button>"""
             return render_template("page.html", content=button)
 
         user.verified = True
@@ -125,7 +131,7 @@ def reset_password(data=None):
     if data is not None:
         try:
             email_address = verify_reset_password_token(data)
-        except (UserResetPasswordTokenInvalidException):
+        except UserResetPasswordTokenInvalidException:
             return render_template(
                 "reset_password.html",
                 errors=["Your reset link is invalid, please generate a new one"],
@@ -202,6 +208,16 @@ def reset_password(data=None):
                 ],
             )
 
+        # Preferably this would be in a pipeline or multi but the benefit is minor
+        limit = cache.inc(f"reset_password_attempt_user_{user.id}")
+        cache.expire(f"reset_password_attempt_user_{user.id}", 180)
+        if limit > 5:
+            return render_template(
+                "reset_password.html",
+                errors=[
+                    _l("Too many password reset attempts. Please try again later.")
+                ],
+            )
         email.forgot_password(email_address)
 
         return render_template(

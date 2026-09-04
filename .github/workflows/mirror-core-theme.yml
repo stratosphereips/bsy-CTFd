@@ -3,14 +3,13 @@ on:
   push:
     branches: 
       - main
-    paths:
-      - 'CTFd/themes/core/**'
+  workflow_dispatch:
 
 jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # need full history for subtree
 
